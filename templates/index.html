@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FHSS 信号分类预测系统</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+    <style>
+        .metric-card { background: #fff; border: 1px solid #e2e8f0; border-radius: .5rem; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .status-success { color: #10b981; font-weight: 700; }
+        .status-error { color: #ef4444; font-weight: 700; }
+        .status-warning { color: #f59e0b; font-weight: 700; }
+        .status-unknown { color: #8b5cf6; font-weight: 700; }
+        .unknown-info { background: #fef3c7; padding: 1rem; border-left: 4px solid #f59e0b; border-radius: .5rem; }
+        .table-sm td, .table-sm th { padding: .4rem .5rem; }
+        .wrap { word-break: break-all; }
+        .small-muted { font-size: .9rem; color: #64748b; }
+        .image-preview { max-width: 400px; max-height: 300px; width: auto; height: auto; border: 1px solid #e2e8f0; border-radius: .5rem; object-fit: contain; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .thumbnail-container { display: flex; gap: 10px; overflow-x: auto; padding: 10px 0; }
+        .thumbnail-container.vertical { flex-direction: column; max-height: 300px; overflow-y: auto; gap: 8px; }
+        .thumbnail-item { flex-shrink: 0; text-align: center; cursor: pointer; border: 2px solid transparent; border-radius: .5rem; padding: 5px; transition: all 0.2s; }
+        .thumbnail-item:hover { border-color: #3b82f6; background: #f8fafc; transform: translateY(-2px); }
+        .thumbnail-item.active { border-color: #3b82f6; background: #dbeafe; box-shadow: 0 2px 4px rgba(59,130,246,0.3); }
+        .thumbnail-item img { width: 80px; height: 60px; object-fit: cover; border-radius: .25rem; }
+        .thumbnail-item .filename { font-size: 0.75rem; margin-top: 5px; color: #64748b; max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+        .thumbnail-container.vertical .thumbnail-item { display: flex; align-items: center; gap: 10px; padding: 8px; }
+        .thumbnail-container.vertical .thumbnail-item img { width: 50px; height: 40px; }
+        .thumbnail-container.vertical .thumbnail-item .filename { max-width: 120px; text-align: left; margin: 0; }
+        .preview-container { background: #f8fafc; border-radius: .5rem; padding: 20px; }
+        .preview-placeholder { min-height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .nav-tabs .nav-link { font-weight: 500; }
+        .nav-tabs .nav-link.active { font-weight: 600; }
+        .stats-table { font-size: 0.9rem; }
+        .stats-table th { background: #f8fafc; font-weight: 600; }
+        .btn-group-sm .btn { font-size: 0.8rem; padding: 0.25rem 0.5rem; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+</head>
+<body class="bg-light">
+    <!-- 顶部导航 -->
+    <nav class="navbar navbar-expand-lg bg-white border-bottom mb-3">
+        <div class="container-fluid">
+            <span class="navbar-brand fw-bold text-primary fs-4">🎯 FHSS 信号分类预测系统</span>
+            <span class="small text-muted">支持未知类别检测的双模型架构系统 | 设备: {{ device }}</span>
+        </div>
+    </nav>
+
+    <div class="container-fluid">
+        <!-- 消息提示 -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="mb-3">
+            {% for category, message in messages %}
+            <div class="alert alert-{{ 'danger' if category=='error' else category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+
+        <div class="row g-3">
+            <!-- 左侧控制面板 -->
+            <div class="col-12 col-lg-3">
+                <!-- 模型配置卡片 -->
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <h5 class="card-title">🔧 模型配置</h5>
+                        <form method="post" action="{{ url_for('route_load_model') }}" class="mb-3">
+                            <label class="form-label">选择模型</label>
+                            <select class="form-select" name="model_name">
+                                {% for name, cfg in model_configs.items() %}
+                                <option value="{{ name }}" {% if model_name==name %}selected{% endif %}>{{ name }}</option>
+                                {% endfor %}
+                            </select>
+                            <div class="form-text">{{ model_name or '未选择' }}</div>
+                            <button class="btn btn-primary w-100 mt-2" type="submit">🔄 加载模型</button>
+                            {% if model_loaded %}
+                            <div class="status-success mt-2">🟢 模型已加载</div>
+                            {% else %}
+                            <div class="status-warning mt-2">⚪ 未加载模型</div>
+                            {% endif %}
+                        </form>
+
+                        <h6>🔍 未知类别检测</h6>
+                        <form method="post" action="{{ url_for('route_recalc') }}">
+                            <label class="form-label">置信度阈值: <b>{{ '%.2f'|format(threshold) }}</b></label>
+                            <input class="form-range" type="range" name="threshold" min="0.1" max="0.95" step="0.05" value="{{ threshold }}" />
+                            <button class="btn btn-outline-secondary w-100" type="submit">更新阈值/重新计算</button>
+                        </form>
+
+                        <hr />
+                        <h6>🤖 模型信息</h6>
+                        {% if model_name %}
+                        <div class="small-muted">
+                            <div><b>名称:</b> {{ model_name }}</div>
+                            <div><b>描述:</b> {{ model_configs[model_name]['description'] }}</div>
+                            <div><b>预处理:</b> {{ model_configs[model_name]['preprocess'] }}</div>
+                            <div><b>类别数:</b> {{ idx2label|length }} + 1 (Unknown)</div>
+                        </div>
+                        {% else %}
+                        <div class="text-warning small">⚠️ 请先加载模型</div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- 图片上传卡片 -->
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <h5 class="card-title">📁 图片上传与预测</h5>
+                        <form method="post" action="{{ url_for('route_predict') }}" enctype="multipart/form-data">
+                            <div class="mb-3">
+                                <input class="form-control" type="file" name="files" accept=".png,.jpg,.jpeg,.bmp,.gif,.tiff" multiple />
+                                <div class="form-text">支持批量上传多个图片文件</div>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-8">
+                                    <input class="form-control" type="number" name="threshold" min="0.1" max="0.95" step="0.05" value="{{ threshold }}" placeholder="阈值" />
+                                </div>
+                                <div class="col-4 d-grid">
+                                    <button class="btn btn-primary" type="submit" {% if not model_loaded %}disabled{% endif %}>🚀 批量预测</button>
+                                </div>
+                            </div>
+                        </form>
+                        <form method="post" action="{{ url_for('route_clear') }}">
+                            <button class="btn btn-outline-danger w-100">🗑️ 清空结果</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧主内容区域 -->
+            <div class="col-12 col-lg-9">
+                {% if results %}
+                <!-- 图片预览区域 - 移到最上方 -->
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <h5 class="card-title">🖼️ 图片预览与浏览</h5>
+                        <div class="row">
+                            <!-- 左侧：大图预览 -->
+                            <div class="col-12 col-lg-8">
+                                {% if selected_result %}
+                                <div class="preview-container text-center">
+                                    <img src="{{ url_for('serve_image', filename=selected_result.temp_filename) }}" class="image-preview" alt="当前图片" />
+                                    <div class="small-muted mt-2">{{ selected_result.filename }}</div>
+                                </div>
+                                {% else %}
+                                <div class="preview-container preview-placeholder text-muted">
+                                    <h6>请选择图片查看预览</h6>
+                                    <p class="small mb-0">点击下方缩略图或表格中的"查看"按钮</p>
+                                </div>
+                                {% endif %}
+                            </div>
+                            
+                            <!-- 右侧：缩略图浏览 -->
+                            <div class="col-12 col-lg-4">
+                                <h6>📋 缩略图浏览</h6>
+                                <div class="thumbnail-container vertical">
+                                    {% for r in results %}
+                                    <div class="thumbnail-item {% if selected_result and r.filename == selected_result.filename %}active{% endif %}" 
+                                         onclick="selectImage('{{ r.filename }}', '{{ r.temp_filename }}')">
+                                        <img src="{{ url_for('serve_image', filename=r.temp_filename) }}" alt="{{ r.filename }}" />
+                                        <div class="filename">{{ r.filename[:15] }}{% if r.filename|length > 15 %}...{% endif %}</div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 统计卡片 -->
+                <div class="row g-3 mb-3">
+                    <div class="col-12 col-lg-2">
+                        <div class="metric-card text-center">
+                            <div class="small-muted">📊 总样本数</div>
+                            <div class="fs-3 fw-bold">{{ stats.total }}</div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-2">
+                        <div class="metric-card text-center">
+                            <div class="small-muted">✅ 预测正确</div>
+                            <div class="fs-3 fw-bold">{{ stats.correct }}</div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-2">
+                        <div class="metric-card text-center">
+                            <div class="small-muted">❌ 预测错误</div>
+                            <div class="fs-3 fw-bold">{{ stats.wrong }}</div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-2">
+                        <div class="metric-card text-center">
+                            <div class="small-muted">❓ 未知类别</div>
+                            <div class="fs-3 fw-bold">{{ stats.unknown }}</div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-2">
+                        <div class="metric-card text-center">
+                            <div class="small-muted">🎯 准确率</div>
+                            <div class="fs-3 fw-bold">{{ '%.1f'|format(stats.accuracy) }}%</div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-2">
+                        <div class="metric-card text-center">
+                            <div class="small-muted">⏱️ 平均耗时</div>
+                            <div class="fs-3 fw-bold">{{ '%.1f'|format(stats.avg_time) }}ms</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 选项卡导航 -->
+                <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="results-tab" data-bs-toggle="tab" data-bs-target="#results" type="button" role="tab">
+                            📊 详细结果
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="stats-tab" data-bs-toggle="tab" data-bs-target="#stats" type="button" role="tab">
+                            📈 统计分析
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="unknown-tab" data-bs-toggle="tab" data-bs-target="#unknown" type="button" role="tab">
+                            ❓ 未知类别
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="model-tab" data-bs-toggle="tab" data-bs-target="#model" type="button" role="tab">
+                            🤖 模型信息
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="analysis-tab" data-bs-toggle="tab" data-bs-target="#analysis" type="button" role="tab">
+                            🔍 混淆矩阵
+                        </button>
+                    </li>
+                </ul>
+
+                <!-- 选项卡内容 -->
+                <div class="tab-content" id="mainTabsContent">
+                    <!-- 详细结果标签页 -->
+                    <div class="tab-pane fade show active" id="results" role="tabpanel">
+                        <div class="card mt-3">
+                            <div class="card-body">
+                                <h5 class="card-title">📊 详细预测结果</h5>
+                                <div class="table-responsive">
+                                    <table class="table table-striped table-sm align-middle">
+                                        <thead>
+                                            <tr>
+                                                <th>序号</th>
+                                                <th>文件名</th>
+                                                <th>真实标签</th>
+                                                <th>预测结果</th>
+                                                <th>置信度</th>
+                                                <th>耗时(ms)</th>
+                                                <th>是否未知</th>
+                                                <th>状态</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for r in results %}
+                                            <tr>
+                                                <td>{{ r.index }}</td>
+                                                <td class="wrap">{{ r.filename }}</td>
+                                                <td>{{ r.true_label }}</td>
+                                                <td>{{ r.predicted_label }}</td>
+                                                <td>{{ '%.3f'|format(r.confidence) }}</td>
+                                                <td>{{ '%.1f'|format(r.inference_time) }}</td>
+                                                <td>{{ '是' if r.is_unknown else '否' }}</td>
+                                                <td>{{ r.status_icon }}</td>
+                                                <td>
+                                                    <div class="btn-group btn-group-sm">
+                                                        <button class="btn btn-outline-secondary" onclick="selectImage('{{ r.filename }}')">查看</button>
+                                                        <button class="btn btn-outline-info" onclick="showDetails('{{ r.filename }}')">详情</button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="mt-3">
+                                    <a class="btn btn-success" href="{{ url_for('route_export') }}">📥 下载CSV结果文件</a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 统计分析标签页 -->
+                    <div class="tab-pane fade" id="stats" role="tabpanel">
+                        <div class="card mt-3">
+                            <div class="card-body">
+                                <h5 class="card-title">📈 统计分析</h5>
+                                
+                                <!-- 详细统计表格 -->
+                                <h6>📋 详细统计信息</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-striped table-sm stats-table">
+                                        <thead>
+                                            <tr>
+                                                <th>指标</th>
+                                                <th>数值</th>
+                                                <th>单位</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr><td>总样本数</td><td>{{ stats.total }}</td><td>张</td></tr>
+                                            <tr><td>已知类别</td><td>{{ stats.known }}</td><td>张</td></tr>
+                                            <tr><td>预测正确</td><td>{{ stats.correct }}</td><td>张</td></tr>
+                                            <tr><td>预测错误</td><td>{{ stats.wrong }}</td><td>张</td></tr>
+                                            <tr><td>未知类别</td><td>{{ stats.unknown }}</td><td>张</td></tr>
+                                            <tr><td>准确率(已知)</td><td>{{ '%.2f'|format(stats.accuracy) }}</td><td>%</td></tr>
+                                            <tr><td>未知率</td><td>{{ '%.2f'|format(stats.unknown_rate) }}</td><td>%</td></tr>
+                                            <tr><td>总耗时</td><td>{{ '%.1f'|format(stats.total_time) }}</td><td>ms</td></tr>
+                                            <tr><td>平均耗时</td><td>{{ '%.1f'|format(stats.avg_time) }}</td><td>ms/张</td></tr>
+                                            <tr><td>置信度阈值</td><td>{{ '%.2f'|format(threshold) }}</td><td></td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <!-- 图表区域 -->
+                                <div class="row mt-4 g-3">
+                                    <div class="col-12 col-lg-6">
+                                        <div class="card">
+                                            <div class="card-body">
+                                                <h6>📊 置信度分布</h6>
+                                                <div id="hist"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-12 col-lg-6">
+                                        <div class="card">
+                                            <div class="card-body">
+                                                <h6>📈 阈值敏感性分析</h6>
+                                                <div id="sensitivity"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 未知类别标签页 -->
+                    <div class="tab-pane fade" id="unknown" role="tabpanel">
+                        <div class="card mt-3">
+                            <div class="card-body">
+                                <h5 class="card-title">❓ 未知类别详细信息</h5>
+                                
+                                {% set unknown_results = results | selectattr('is_unknown') | list %}
+                                {% if unknown_results and unknown_results|length > 0 %}
+                                <div class="unknown-info mb-3">
+                                    <div><b>🔍 未知类别检测说明:</b></div>
+                                    <div>• 当模型预测的最大置信度低于设定阈值 ({{ '%.2f'|format(threshold) }}) 时，判定为未知类别</div>
+                                    <div>• 检测到 <b>{{ unknown_results|length }}</b> 个未知类别样本</div>
+                                    <div>• 未知类别样本可能是新的信号类型，需要进一步分析</div>
+                                    <div>• 调整置信度阈值可以控制未知类别的敏感度</div>
+                                </div>
+
+                                <div class="table-responsive">
+                                    <table class="table table-striped table-sm align-middle">
+                                        <thead>
+                                            <tr>
+                                                <th>序号</th>
+                                                <th>文件名</th>
+                                                <th>原始预测</th>
+                                                <th>最大置信度</th>
+                                                <th>阈值</th>
+                                                <th>差距</th>
+                                                <th>建议</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for r in unknown_results %}
+                                            {% set d = r.prediction_details %}
+                                            {% set gap = d.threshold_gap %}
+                                            <tr>
+                                                <td>{{ r.index }}</td>
+                                                <td class="wrap">{{ r.filename }}</td>
+                                                <td>{{ d.raw_predicted_label }}</td>
+                                                <td>{{ '%.3f'|format(d.max_confidence) }}</td>
+                                                <td>{{ '%.2f'|format(threshold) }}</td>
+                                                <td>{{ '%.3f'|format(gap) }}</td>
+                                                <td>
+                                                    {% if gap > 0.3 %}
+                                                        <span class="text-danger">极低置信度，可能是全新类别</span>
+                                                    {% elif gap > 0.1 %}
+                                                        <span class="text-warning">中等置信度，需要进一步验证</span>
+                                                    {% else %}
+                                                        <span class="text-info">接近阈值，可能需要调整阈值</span>
+                                                    {% endif %}
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                {% else %}
+                                <div class="alert alert-success">
+                                    🎉 当前没有检测到未知类别样本！
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 模型信息标签页 -->
+                    <div class="tab-pane fade" id="model" role="tabpanel">
+                        <div class="card mt-3">
+                            <div class="card-body">
+                                <h5 class="card-title">🤖 模型信息</h5>
+                                
+                                {% if model_name %}
+                                <div class="row">
+                                    <div class="col-12 col-lg-8">
+                                        <h6>基本信息</h6>
+                                        <table class="table table-borderless">
+                                            <tr><td><b>模型名称:</b></td><td>{{ model_name }}</td></tr>
+                                            <tr><td><b>模型描述:</b></td><td>{{ model_configs[model_name]['description'] }}</td></tr>
+                                            <tr><td><b>预处理方式:</b></td><td>{{ model_configs[model_name]['preprocess'] }}</td></tr>
+                                            <tr><td><b>计算设备:</b></td><td>{{ device }}</td></tr>
+                                            <tr><td><b>置信度阈值:</b></td><td>{{ '%.2f'|format(threshold) }}</td></tr>
+                                            <tr><td><b>支持类别数:</b></td><td>{{ idx2label|length }} + 1 (Unknown)</td></tr>
+                                        </table>
+                                    </div>
+                                    <div class="col-12 col-lg-4">
+                                        {% if model_name == 'ResNet18' %}
+                                        <div class="alert alert-info">
+                                            <h6>ResNet18 特点:</h6>
+                                            <ul class="mb-0 small">
+                                                <li>18层深度残差网络</li>
+                                                <li>跳跃连接解决梯度消失</li>
+                                                <li>计算效率高，推理速度快</li>
+                                                <li>基于softmax概率阈值检测未知类别</li>
+                                            </ul>
+                                        </div>
+                                        {% else %}
+                                        <div class="alert alert-info">
+                                            <h6>ResTransformer 特点:</h6>
+                                            <ul class="mb-0 small">
+                                                <li>CNN + Transformer 混合架构</li>
+                                                <li>ResNet18 特征提取 + Transformer序列建模</li>
+                                                <li>结合局部特征和全局关系</li>
+                                                <li>基于softmax概率阈值检测未知类别</li>
+                                            </ul>
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <h6 class="mt-4">📋 标签映射</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-striped table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th>索引</th>
+                                                <th>标签</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for idx, label in idx2label.items() %}
+                                            <tr>
+                                                <td>{{ idx }}</td>
+                                                <td>{{ label }}</td>
+                                            </tr>
+                                            {% endfor %}
+                                            <tr class="table-warning">
+                                                <td>-1</td>
+                                                <td>Unknown (未知类别)</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                {% else %}
+                                <div class="alert alert-warning">
+                                    ⚠️ 请先加载模型
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 混淆矩阵标签页 -->
+                    <div class="tab-pane fade" id="analysis" role="tabpanel">
+                        <div class="card mt-3">
+                            <div class="card-body">
+                                <h5 class="card-title">🔍 混淆矩阵（仅已知类别）</h5>
+                                <div id="cm"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <!-- 无结果时的提示 -->
+                <div class="card mt-3">
+                    <div class="card-body text-center py-5">
+                        <h4 class="text-muted">📁 请先上传图片并进行预测</h4>
+                        <p class="text-muted">选择图片文件，设置置信度阈值，然后点击"批量预测"开始分析</p>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- 单样本详情模态框 -->
+    <div class="modal fade" id="detailsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">🧪 单样本详细分析</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="detailsModalBody">
+                    <!-- 动态内容 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    {% if results %}
+    <script>
+        // 置信度直方图数据
+        var confidences = JSON.parse('{{ confidences|tojson|safe }}');
+        var unknownFlags = JSON.parse('{{ unknown_flags|tojson|safe }}');
+        var threshold = JSON.parse('{{ threshold|tojson|safe }}');
+
+        var known = confidences.filter(function(c, i) { return !unknownFlags[i]; });
+        var unknown = confidences.filter(function(c, i) { return unknownFlags[i]; });
+
+        var histData = [];
+        if (known.length) histData.push({ x: known, type: 'histogram', opacity: 0.7, name: '已知', marker: {color: '#3b82f6'} });
+        if (unknown.length) histData.push({ x: unknown, type: 'histogram', opacity: 0.7, name: '未知', marker: {color: '#8b5cf6'} });
+
+        var histLayout = {
+            barmode: 'overlay',
+            title: '置信度分布', xaxis: {title: '置信度'}, yaxis: {title: '样本数量'},
+            shapes: [{ type: 'line', x0: threshold, x1: threshold, y0: 0, y1: 1, yref: 'paper', line: {dash: 'dash', color: 'red'} }],
+            height: 300
+        };
+        Plotly.newPlot('hist', histData, histLayout, {responsive: true});
+
+        // 阈值敏感性
+        var thX = JSON.parse('{{ th_x|tojson|safe }}');
+        var thY = JSON.parse('{{ th_y|tojson|safe }}');
+        var sensData = [{ x: thX, y: thY, mode: 'lines+markers', name: '未知数量', line: {color: '#8b5cf6', width: 3} }];
+        var sensLayout = { title: '阈值敏感性分析', xaxis: {title: '阈值'}, yaxis: {title: '未知类别数量'}, height: 300 };
+        Plotly.newPlot('sensitivity', sensData, sensLayout, {responsive: true});
+
+        // 混淆矩阵
+        var cm = JSON.parse('{{ cm|tojson|safe }}');
+        if (cm.labels && cm.labels.length) {
+            var cmData = [{ z: cm.matrix, x: cm.labels, y: cm.labels, type: 'heatmap', colorscale: 'Blues' }];
+            var cmLayout = { title: '混淆矩阵', xaxis: {title: '预测标签'}, yaxis: {title: '真实标签'}, height: 400 };
+            Plotly.newPlot('cm', cmData, cmLayout, {responsive: true});
+        } else {
+            document.getElementById('cm').innerHTML = '<div class="text-muted text-center py-4">没有已知类别的预测结果</div>';
+        }
+
+        // 选择图片函数
+        function selectImage(filename, temp_filename) {
+            // 更新缩略图状态
+            document.querySelectorAll('.thumbnail-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.target.closest('.thumbnail-item').classList.add('active');
+            
+            // 更新图片预览
+            var result = JSON.parse('{{ results|tojson|safe }}').find(r => r.filename === filename);
+            if (result) {
+                var previewImg = document.querySelector('.image-preview');
+                if (previewImg) {
+                    previewImg.src = '{{ url_for("serve_image", filename="") }}' + result.temp_filename;
+                    previewImg.nextElementSibling.textContent = result.filename;
+                }
+            }
+        }
+
+        // 显示详情函数
+        function showDetails(filename) {
+            var result = JSON.parse('{{ results|tojson|safe }}').find(r => r.filename === filename);
+            if (result) {
+                var modalBody = document.getElementById('detailsModalBody');
+                var details = result.prediction_details;
+                
+                var html = `
+                    <div class="row">
+                        <div class="col-12 col-lg-5">
+                            <img src="{{ url_for('serve_image', filename='') }}${result.temp_filename}" class="img-fluid rounded" alt="${result.filename}" />
+                            <h6 class="mt-3">基本信息</h6>
+                            <table class="table table-sm">
+                                <tr><td>文件名:</td><td>${result.filename}</td></tr>
+                                <tr><td>真实标签:</td><td>${result.true_label}</td></tr>
+                                <tr><td>预测结果:</td><td>${result.predicted_label}</td></tr>
+                                <tr><td>置信度:</td><td>${result.confidence.toFixed(3)}</td></tr>
+                                <tr><td>推理耗时:</td><td>${result.inference_time.toFixed(1)} ms</td></tr>
+                                <tr><td>是否未知:</td><td>${result.is_unknown ? '是' : '否'}</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-12 col-lg-7">
+                            <div id="top5Chart"></div>
+                        </div>
+                    </div>
+                `;
+                
+                modalBody.innerHTML = html;
+                
+                // 绘制 Top-5 概率图
+                if (details.all_probabilities) {
+                    var probs = details.all_probabilities;
+                    var indices = probs.map((v, i) => [v, i]).sort((a,b) => b[0]-a[0]).slice(0,5).map(p => p[1]);
+                    var labels = indices.map(i => JSON.parse('{{ idx2label|tojson|safe }}')[i]);
+                    var values = indices.map(i => probs[i]);
+                    var rawIdx = details.raw_predicted_idx;
+                    var colors = indices.map(i => i === rawIdx ? '#ef4444' : '#3b82f6');
+                    
+                    var top5Data = [{ x: labels, y: values, type: 'bar', marker: {color: colors} }];
+                    var top5Layout = { 
+                        title: 'Top-5 预测概率分布', 
+                        yaxis: {title: '概率', range: [0,1]}, 
+                        height: 300,
+                        shapes: [{ type: 'line', x0: -0.5, x1: 4.5, y0: threshold, y1: threshold, line: {dash: 'dash', color: 'red'} }]
+                    };
+                    
+                    setTimeout(() => {
+                        Plotly.newPlot('top5Chart', top5Data, top5Layout, {responsive: true});
+                    }, 100);
+                }
+                
+                var modal = new bootstrap.Modal(document.getElementById('detailsModal'));
+                modal.show();
+            }
+        }
+    </script>
+    {% endif %}
+</body>
+</html>
+
+
